@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Travel Planner</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="route.js"></script>
+</head>
+<body>
+  <div id="sidebar">
+    <h2>Trip Planner</h2>
+    <input id="location-input" type="text" placeholder="Add location" />
+    <button id="add-btn">Add Location</button>
+    <button id="opt-btn">Optimize Route</button>
+    <ul id="location-list"></ul>
+  </div>
+  <div id="map"></div>
+  <script>
+    const map = L.map('map').setView([20,0], 2);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    const markers = [];
+    let routeLine = null;
+
+    function addMarker(loc) {
+      const marker = L.marker([loc.lat, loc.lng]).addTo(map).bindPopup(loc.name || 'Location');
+      markers.push({ marker, loc });
+      const li = document.createElement('li');
+      li.textContent = loc.name || `${loc.lat.toFixed(3)}, ${loc.lng.toFixed(3)}`;
+      document.getElementById('location-list').appendChild(li);
+      if (markers.length === 1) marker.bindPopup('Hotel (Start)').openPopup();
+    }
+
+    async function geocode(query) {
+      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`);
+      const data = await res.json();
+      return data[0] ? { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon), name: data[0].display_name } : null;
+    }
+
+    document.getElementById('add-btn').onclick = async () => {
+      const query = document.getElementById('location-input').value.trim();
+      if (!query) return;
+      const loc = await geocode(query);
+      if (loc) {
+        addMarker(loc);
+        map.setView([loc.lat, loc.lng], 13);
+      }
+      document.getElementById('location-input').value = '';
+    };
+
+    document.getElementById('opt-btn').onclick = () => {
+      if (markers.length < 2) return;
+      const locs = markers.map(m => ({ lat: m.loc.lat, lng: m.loc.lng }));
+      const route = optimizeRoute(locs);
+      if (routeLine) routeLine.remove();
+      const latlngs = route.map(p => [p.lat, p.lng]);
+      routeLine = L.polyline(latlngs, { color: 'blue' }).addTo(map);
+      map.fitBounds(routeLine.getBounds());
+    };
+  </script>
+</body>
+</html>
