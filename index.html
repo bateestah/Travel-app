@@ -69,6 +69,8 @@
   </div>
   <input type="text" id="locInput" placeholder="Add stop address" />
   <button id="locBtn">Add Location</button>
+  <input type="text" id="gmListInput" placeholder="Google Maps list share link" />
+  <button id="gmImportBtn">Import List</button>
   <button id="optBtn">Optimize Route</button>
   <h2>Stops</h2>
   <ol id="stops"></ol>
@@ -91,9 +93,11 @@
   const locInput = document.getElementById('locInput');
   const hotelLabel = document.getElementById('hotelLabel');
   const hotelInfo = document.getElementById('hotelInfo');
+  const gmListInput = document.getElementById('gmListInput');
 
   document.getElementById('hotelBtn').onclick = setHotel;
   document.getElementById('locBtn').onclick = addLocation;
+  document.getElementById('gmImportBtn').onclick = importGMList;
   document.getElementById('optBtn').onclick = optimizeRoute;
   document.getElementById('hotelEditBtn').onclick = editHotelName;
 
@@ -193,6 +197,45 @@
       renderStops();
     } catch (e) {
       alert('Location not found.');
+    }
+  }
+
+  async function importGMList() {
+    const url = gmListInput.value.trim();
+    if (!url) { alert('Please enter a Google Maps list link.'); return; }
+    try {
+      const proxy = 'https://r.jina.ai/' + url;
+      const res = await fetch(proxy);
+      const html = await res.text();
+      const match = html.match(/APP_INITIALIZATION_STATE=(.*?);<\/script>/);
+      if (!match) { throw new Error('No data found'); }
+      const data = JSON.parse(match[1]);
+      const places = [];
+      extractPlaces(data, places);
+      if (!places.length) { throw new Error('No places parsed'); }
+      places.forEach(p => {
+        const marker = L.marker(p).addTo(map).bindPopup(p.name);
+        locations.push({...p, marker});
+      });
+      gmListInput.value = '';
+      if (places[0]) map.setView(places[0], 13);
+      renderStops();
+    } catch (e) {
+      console.error(e);
+      alert('Failed to import Google Maps list.');
+    }
+  }
+
+  function extractPlaces(node, out) {
+    if (Array.isArray(node)) {
+      if (node.length > 14 && Array.isArray(node[14]) &&
+          typeof node[14][0] === 'number' && typeof node[14][1] === 'number') {
+        const lat = node[14][0] / 1e7;
+        const lng = node[14][1] / 1e7;
+        const name = node[11] || node[5] || 'Unnamed';
+        out.push({lat, lng, name});
+      }
+      node.forEach(n => extractPlaces(n, out));
     }
   }
 
