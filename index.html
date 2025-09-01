@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Travel Planner</title>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      font-family: Arial, sans-serif;
+    }
+    #map {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      right: 0;
+      left: 30%;
+    }
+    #panel {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 30%;
+      background: #f8f9fa;
+      padding: 1rem;
+      box-sizing: border-box;
+      overflow-y: auto;
+      box-shadow: 2px 0 5px rgba(0,0,0,0.1);
+    }
+    h1 {
+      margin-top: 0;
+    }
+    #panel > button {
+      margin: 0.25rem 0;
+      width: 100%;
+      padding: 0.5rem;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+    li button {
+      margin-left: 0.5rem;
+      padding: 0.2rem 0.4rem;
+      font-size: 0.8rem;
+    }
+    input[type="text"] {
+      width: 100%;
+      padding: 0.4rem;
+      margin: 0.25rem 0;
+      box-sizing: border-box;
+    }
+    ol {
+      padding-left: 1.2rem;
+    }
+  </style>
+</head>
+<body>
+<div id="panel">
+  <h1>Trip Planner</h1>
+  <p>Enter addresses to set your hotel and stops. Searches are optimized for Japan. Click "Optimize Route" to see the suggested path.</p>
+  <input type="text" id="hotelInput" placeholder="Hotel address" />
+  <button id="hotelBtn">Set Hotel</button>
+  <div id="hotelInfo" style="display:none;">
+    <strong>Hotel:</strong> <span id="hotelLabel"></span>
+    <button id="hotelEditBtn">Edit</button>
+  </div>
+  <input type="text" id="locInput" placeholder="Add stop address" />
+  <button id="locBtn">Add Location</button>
+  <button id="optBtn">Optimize Route</button>
+  <h2>Stops</h2>
+  <ol id="stops"></ol>
+</div>
+<div id="map"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  const map = L.map('map').setView([36.2048, 138.2529], 5); // center on Japan
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/">OSM</a>'
+  }).addTo(map);
+
+  let hotelMarker = null;
+  let hotelName = '';
+  const locations = []; // {lat,lng,name,marker}
+  let routeLine = null;
+  const stopsList = document.getElementById('stops');
+  const hotelInput = document.getElementById('hotelInput');
+  const locInput = document.getElementById('locInput');
+  const hotelLabel = document.getElementById('hotelLabel');
+  const hotelInfo = document.getElementById('hotelInfo');
+
+  document.getElementById('hotelBtn').onclick = setHotel;
+  document.getElementById('locBtn').onclick = addLocation;
+  document.getElementById('optBtn').onclick = optimizeRoute;
+  document.getElementById('hotelEditBtn').onclick = editHotelName;
+
+  function normalizeAddress(addr) {
+    addr = addr.replace(/〒\d{3}-\d{4}\s*/, '');
+    addr = addr.replace(/\bJapan\b/i, '');
+    addr = addr.replace(/[\uFF0D\u2212]/g, '-');
+    const wards = {
+      'Chiyoda City': 'Chiyoda-ku',
+      'Chuo City': 'Chuo-ku',
+      'Minato City': 'Minato-ku',
+      'Shinjuku City': 'Shinjuku-ku',
+      'Bunkyo City': 'Bunkyo-ku',
+      'Taito City': 'Taito-ku',
+      'Sumida City': 'Sumida-ku',
+      'Koto City': 'Koto-ku',
+      'Shinagawa City': 'Shinagawa-ku',
+      'Meguro City': 'Meguro-ku',
+      'Ota City': 'Ota-ku',
+      'Setagaya City': 'Setagaya-ku',
+      'Shibuya City': 'Shibuya-ku',
+      'Nakano City': 'Nakano-ku',
+      'Suginami City': 'Suginami-ku',
+      'Toshima City': 'Toshima-ku',
+      'Kita City': 'Kita-ku',
+      'Arakawa City': 'Arakawa-ku',
+      'Itabashi City': 'Itabashi-ku',
+      'Nerima City': 'Nerima-ku',
+      'Adachi City': 'Adachi-ku',
+      'Katsushika City': 'Katsushika-ku',
+      'Edogawa City': 'Edogawa-ku'
+    };
+    for (const [from, to] of Object.entries(wards)) {
+      addr = addr.replace(from, to);
+    }
+    return addr.trim();
+  }
+
+  async function geocode(query) {
+    const normalized = normalizeAddress(query);
+    let url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=jp&accept-language=ja&q=${encodeURIComponent(normalized)}`;
+    let res = await fetch(url);
+    let data = await res.json();
+    if (data[0]) {
+      return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon), name: data[0].display_name };
+    }
+    url = `https://msearch.gsi.go.jp/address-search/AddressSearch?q=${encodeURIComponent(normalized)}`;
+    res = await fetch(url);
+    data = await res.json();
+    if (data && data[0] && data[0].geometry) {
+      const [lng, lat] = data[0].geometry.coordinates;
+      return { lat, lng, name: data[0].properties?.title || normalized };
+    }
+    throw new Error('not found');
+  }
+
+  async function setHotel() {
+    const addr = hotelInput.value.trim();
+    if (!addr) { alert('Please enter a hotel address.'); return; }
+    try {
+      const p = await geocode(addr);
+      if (hotelMarker) map.removeLayer(hotelMarker);
+      hotelName = p.name;
+      hotelMarker = L.marker(p, {icon: L.icon({
+        iconUrl: 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/images/marker-icon.png',
+        iconSize: [25,41], iconAnchor:[12,41],
+        popupAnchor:[1,-34], shadowSize:[41,41]
+      })}).addTo(map).bindPopup(hotelName).openPopup();
+      hotelLabel.textContent = hotelName;
+      hotelInfo.style.display = 'block';
+      map.setView(p, 13);
+    } catch (e) {
+      alert('Hotel address not found.');
+    }
+  }
+
+  function editHotelName() {
+    if (!hotelMarker) { alert('Please set the hotel first.'); return; }
+    const newName = prompt('Hotel name', hotelName || 'Hotel');
+    if (newName) {
+      hotelName = newName;
+      hotelLabel.textContent = hotelName;
+      hotelMarker.bindPopup(hotelName).openPopup();
+    }
+  }
+
+  async function addLocation() {
+    const addr = locInput.value.trim();
+    if (!addr) { alert('Please enter a stop address.'); return; }
+    try {
+      const p = await geocode(addr);
+      const marker = L.marker(p).addTo(map).bindPopup(p.name);
+      const loc = {...p, marker};
+      locations.push(loc);
+      locInput.value = '';
+      map.setView(p, 13);
+      renderStops();
+    } catch (e) {
+      alert('Location not found.');
+    }
+  }
+
+  function renderStops(order = locations, showOrder = false) {
+    stopsList.innerHTML = '';
+    order.forEach((loc, i) => {
+      const li = document.createElement('li');
+      const span = document.createElement('span');
+      span.textContent = showOrder ? `Stop ${i+1}: ${loc.name}` : loc.name;
+      li.appendChild(span);
+      const editBtn = document.createElement('button');
+      editBtn.textContent = 'Edit';
+      editBtn.onclick = () => {
+        const newName = prompt('New name', loc.name);
+        if (newName) {
+          loc.name = newName;
+          span.textContent = showOrder ? `Stop ${i+1}: ${loc.name}` : loc.name;
+          loc.marker.bindPopup(newName);
+        }
+      };
+      li.appendChild(editBtn);
+      stopsList.appendChild(li);
+    });
+  }
+
+  function distance(a, b) {
+    const R = 6371; // km
+    const dLat = (b.lat - a.lat) * Math.PI / 180;
+    const dLng = (b.lng - a.lng) * Math.PI / 180;
+    const lat1 = a.lat * Math.PI / 180;
+    const lat2 = b.lat * Math.PI / 180;
+    const sinDLat = Math.sin(dLat/2);
+    const sinDLng = Math.sin(dLng/2);
+    const c = 2 * Math.asin(Math.sqrt(sinDLat*sinDLat + Math.cos(lat1)*Math.cos(lat2)*sinDLng*sinDLng));
+    return R * c;
+  }
+
+  function nearestNeighbor(start, pts) {
+    const remaining = pts.slice();
+    const route = [];
+    let current = start;
+    while (remaining.length) {
+      let idx = 0;
+      let best = Infinity;
+      remaining.forEach((p,i) => {
+        const d = distance(current,p);
+        if (d < best) { best = d; idx = i; }
+      });
+      current = remaining.splice(idx,1)[0];
+      route.push(current);
+    }
+    return route;
+  }
+
+  function optimizeRoute() {
+    if (!hotelMarker) {
+      alert('Please set the hotel location first.');
+      return;
+    }
+    if (locations.length === 0) {
+      alert('Please add at least one stop.');
+      return;
+    }
+    const hotel = hotelMarker.getLatLng();
+    const ordered = nearestNeighbor(hotel, locations);
+    const latlngs = [hotel, ...ordered];
+
+    if (routeLine) map.removeLayer(routeLine);
+    routeLine = L.polyline(latlngs, {color: 'blue'}).addTo(map);
+    renderStops(ordered, true);
+  }
+</script>
+</body>
+</html>
