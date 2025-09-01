@@ -70,6 +70,8 @@
   <input type="text" id="locInput" placeholder="Add stop address" />
   <button id="locBtn">Add Location</button>
   <button id="optBtn">Optimize Route</button>
+  <input type="text" id="gmapInput" placeholder="Google Maps list link" />
+  <button id="importListBtn">Import Google List</button>
   <h2>Stops</h2>
   <ol id="stops"></ol>
 </div>
@@ -89,6 +91,7 @@
   const stopsList = document.getElementById('stops');
   const hotelInput = document.getElementById('hotelInput');
   const locInput = document.getElementById('locInput');
+  const gmapInput = document.getElementById('gmapInput');
   const hotelLabel = document.getElementById('hotelLabel');
   const hotelInfo = document.getElementById('hotelInfo');
 
@@ -96,6 +99,7 @@
   document.getElementById('locBtn').onclick = addLocation;
   document.getElementById('optBtn').onclick = optimizeRoute;
   document.getElementById('hotelEditBtn').onclick = editHotelName;
+  document.getElementById('importListBtn').onclick = importGoogleList;
 
   function normalizeAddress(addr) {
     addr = addr.replace(/〒\d{3}-\d{4}\s*/, '');
@@ -263,6 +267,67 @@
     if (routeLine) map.removeLayer(routeLine);
     routeLine = L.polyline(latlngs, {color: 'blue'}).addTo(map);
     renderStops(ordered, true);
+  }
+
+  async function importGoogleList() {
+    const link = gmapInput.value.trim();
+    if (!link) { alert('Please paste a Google Maps list link.'); return; }
+    const kmlUrl = makeKmlUrl(link);
+    if (!kmlUrl) { alert('Unsupported link.'); return; }
+    try {
+      const resp = await fetch('https://cors.isomorphic-git.org/' + kmlUrl);
+      if (!resp.ok) throw new Error('fetch failed');
+      const text = await resp.text();
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(text, 'application/xml');
+      let placemarks = doc.getElementsByTagName('Placemark');
+      if (!placemarks.length) {
+        placemarks = doc.getElementsByTagNameNS('*', 'Placemark');
+      }
+      const bounds = L.latLngBounds();
+      for (const pm of placemarks) {
+        const nameEl = pm.getElementsByTagName('name')[0] || pm.getElementsByTagNameNS('*', 'name')[0];
+        const name = nameEl?.textContent || 'Place';
+        const coordEl = pm.getElementsByTagName('coordinates')[0] || pm.getElementsByTagNameNS('*', 'coordinates')[0];
+        const coordText = coordEl?.textContent.trim();
+        if (!coordText) continue;
+        const [lng, lat] = coordText.split(',').map(Number);
+        const p = { lat, lng, name };
+        const marker = L.marker(p).addTo(map).bindPopup(name);
+        locations.push({ ...p, marker });
+        bounds.extend([lat, lng]);
+      }
+      if (bounds.isValid()) {
+        map.fitBounds(bounds.pad(0.25));
+      }
+      renderStops();
+    } catch (err) {
+      console.error(err);
+      alert('Failed to import list.');
+    }
+  }
+
+  function makeKmlUrl(link) {
+    try {
+      const url = new URL(link);
+      const mid = url.searchParams.get('mid');
+      const auth = url.searchParams.get('authuser');
+      const hl = url.searchParams.get('hl');
+      const extra = [];
+      if (auth) extra.push(`authuser=${auth}`);
+      if (hl) extra.push(`hl=${hl}`);
+      const suffix = extra.length ? `&${extra.join('&')}` : '';
+      if (mid) {
+        const id = encodeURIComponent(mid);
+        return `https://www.google.com/maps/d/u/0/kml?forcekml=1&mid=${id}${suffix}`;
+      }
+      const listMatch = url.pathname.match(/\/maps\/placelists\/list\/([^/]+)/);
+      if (listMatch) {
+        const id = encodeURIComponent(listMatch[1]);
+        return `https://www.google.com/maps/placelists/kml?view=1&list=${id}${suffix}`;
+      }
+    } catch (e) {}
+    return null;
   }
 </script>
 </body>
